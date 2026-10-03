@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ESP32 Water Salinity Monitor</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0f0f0f;
+            color: #fff;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .card {
+            background: #1a1a2e;
+            border-radius: 24px;
+            padding: 40px;
+            text-align: center;
+            max-width: 400px;
+            width: 100%;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+        }
+        h1 { font-size: 1.3rem; margin-bottom: 8px; color: #a0a0b0; }
+        .status-circle {
+            width: 140px;
+            height: 140px;
+            border-radius: 50%;
+            margin: 30px auto;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.8rem;
+            font-weight: bold;
+            transition: all 0.3s ease;
+        }
+        .status-circle.salty {
+            background: #ff6d00;
+            box-shadow: 0 0 40px rgba(255,109,0,0.4);
+        }
+        .status-circle.fresh {
+            background: #00c853;
+            box-shadow: 0 0 40px rgba(0,200,83,0.4);
+        }
+        .status-circle .label {
+            font-size: 0.9rem;
+            font-weight: normal;
+            margin-top: 5px;
+            opacity: 0.8;
+        }
+        .status-text {
+            font-size: 1.5rem;
+            font-weight: bold;
+            margin-bottom: 10px;
+        }
+        .status-text.salty { color: #ff6d00; }
+        .status-text.fresh { color: #00c853; }
+        .info-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 12px 0;
+            border-bottom: 1px solid #333;
+            font-size: 0.95rem;
+        }
+        .info-row .label { color: #888; }
+        .info-row .value { color: #fff; font-weight: bold; }
+        .pump-status {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 12px;
+            font-size: 1rem;
+            font-weight: bold;
+        }
+        .pump-status.on {
+            background: rgba(0,200,83,0.15);
+            color: #00c853;
+            border: 1px solid rgba(0,200,83,0.3);
+        }
+        .pump-status.off {
+            background: rgba(255,109,0,0.15);
+            color: #ff6d00;
+            border: 1px solid rgba(255,109,0,0.3);
+        }
+        .last-update {
+            color: #666;
+            font-size: 0.85rem;
+            margin-top: 20px;
+        }
+        .device-info {
+            color: #555;
+            font-size: 0.8rem;
+            margin-top: 8px;
+        }
+        .qr-section {
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 1px solid #333;
+        }
+        .qr-section h3 {
+            color: #888;
+            font-size: 0.9rem;
+            margin-bottom: 12px;
+        }
+        #qrcode img {
+            border-radius: 12px;
+            background: #fff;
+            padding: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>Water Salinity Monitor</h1>
+        <div id="statusCircle" class="status-circle salty">
+            <div>SALTY</div>
+            <div class="label">Water Status</div>
+        </div>
+        <div id="statusText" class="status-text salty">SALTY WATER</div>
+        
+        <div class="info-row">
+            <span class="label">TDS Level</span>
+            <span id="tdsValue" class="value">--- ppm</span>
+        </div>
+        <div class="info-row">
+            <span class="label">Threshold</span>
+            <span class="value">500 ppm</span>
+        </div>
+        <div class="info-row">
+            <span class="label">Pump</span>
+            <span id="pumpState" class="value">OFF</span>
+        </div>
+        
+        <div id="pumpStatus" class="pump-status off">
+            Pump is OFF — Water is fresh
+        </div>
+        
+        <div id="lastUpdate" class="last-update">Waiting for data...</div>
+        <div class="device-info">ESP32-C3 Super Mini &bull; TDS Sensor &bull; Relay Pump Control</div>
+
+        <div class="qr-section">
+            <h3>Scan to share</h3>
+            <div id="qrcode"></div>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+    <script>
+        const TDS_THRESHOLD = 500;
+        let pollInterval;
+
+        // Generate QR code for current URL
+        new QRCode(document.getElementById('qrcode'), {
+            text: window.location.href,
+            width: 128,
+            height: 128,
+            colorDark: '#000000',
+            colorLight: '#ffffff',
+            correctLevel: QRCode.CorrectLevel.M
+        });
+
+        async function fetchStatus() {
+            try {
+                const res = await fetch('/api/status');
+                const data = await res.json();
+                updateUI(data);
+            } catch (e) {
+                console.log('Fetch error:', e);
+            }
+        }
+
+        function updateUI(data) {
+            const tds = data.tds || 0;
+            const relayOn = data.relay;
+            const isSalty = tds > TDS_THRESHOLD;
+            
+            const circle = document.getElementById('statusCircle');
+            const text = document.getElementById('statusText');
+            const tdsEl = document.getElementById('tdsValue');
+            const pumpEl = document.getElementById('pumpState');
+            const pumpStatus = document.getElementById('pumpStatus');
+            const lastUpdate = document.getElementById('lastUpdate');
+            
+            tdsEl.textContent = tds + ' ppm';
+            
+            if (isSalty) {
+                circle.className = 'status-circle salty';
+                circle.innerHTML = '<div>SALTY</div><div class="label">Water Status</div>';
+                text.className = 'status-text salty';
+                text.textContent = 'SALTY WATER';
+            } else {
+                circle.className = 'status-circle fresh';
+                circle.innerHTML = '<div>FRESH</div><div class="label">Water Status</div>';
+                text.className = 'status-text fresh';
+                text.textContent = 'FRESH WATER';
+            }
+            
+            pumpEl.textContent = relayOn ? 'ON' : 'OFF';
+            
+            if (relayOn) {
+                pumpStatus.className = 'pump-status on';
+                pumpStatus.textContent = 'Pump is ON — Replacing salty water with fresh';
+            } else {
+                pumpStatus.className = 'pump-status off';
+                pumpStatus.textContent = 'Pump is OFF — Water is fresh';
+            }
+            
+            if (data.timestamp) {
+                const d = new Date(data.timestamp * 1000);
+                lastUpdate.textContent = 'Last update: ' + d.toLocaleTimeString();
+            }
+        }
+
+        // Poll every 2 seconds
+        pollInterval = setInterval(fetchStatus, 2000);
+        fetchStatus();
+    </script>
+</body>
+</html>

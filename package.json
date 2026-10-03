@@ -1,0 +1,13 @@
+{
+  "name": "water-monitor",
+  "version": "1.0.0",
+  "private": true,
+  "description": "ESP32-C3 Water Salinity Monitor with Pump Control",
+  "scripts": {
+    "dev": "vercel dev",
+    "deploy": "vercel --prod"
+  },
+  "devDependencies": {
+    "vercel": "^37.0.0"
+  }
+}
