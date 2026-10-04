@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Water Monitor — Admin</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+    background:#0d0d0f; color:#e8e8ea; padding:16px; line-height:1.5;
+  }
+  .wrap { max-width:760px; margin:0 auto; }
+  header { display:flex; align-items:center; justify-content:space-between; margin-bottom:18px; }
+  h1 { font-size:1.25rem; font-weight:700; }
+  .badge { font-size:.72rem; padding:4px 10px; border-radius:20px; font-weight:600; }
+  .on  { background:rgba(0,200,83,.15); color:#00c853; border:1px solid rgba(0,200,83,.35); }
+  .off { background:rgba(255,109,0,.15); color:#ff6d00; border:1px solid rgba(255,109,0,.35); }
+
+  .card { background:#17171c; border:1px solid #26262e; border-radius:16px; padding:18px; margin-bottom:14px; }
+  .card h2 { font-size:.78rem; text-transform:uppercase; letter-spacing:.08em; color:#7a7a86; margin-bottom:14px; font-weight:600; }
+
+  .hero { display:flex; align-items:center; gap:18px; }
+  .dot { width:64px; height:64px; border-radius:50%; flex:0 0 64px; }
+  .dot.salty { background:#ff6d00; box-shadow:0 0 26px rgba(255,109,0,.45); }
+  .dot.fresh { background:#00c853; box-shadow:0 0 26px rgba(0,200,83,.45); }
+  .hero .t { font-size:1.4rem; font-weight:700; }
+  .hero .s { color:#8a8a95; font-size:.85rem; }
+
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:16px; }
+  .kv { background:#111117; border-radius:10px; padding:11px 13px; }
+  .kv .k { color:#7a7a86; font-size:.7rem; text-transform:uppercase; letter-spacing:.05em; }
+  .kv .v { font-size:1.05rem; font-weight:700; margin-top:2px; }
+
+  .row { display:flex; gap:8px; flex-wrap:wrap; }
+  button {
+    flex:1; min-width:110px; padding:13px; border:0; border-radius:11px;
+    font-size:.92rem; font-weight:700; cursor:pointer; color:#000; transition:.15s;
+  }
+  button:active { transform:scale(.97); }
+  .b-auto  { background:#4d7cff; color:#fff; }
+  .b-on    { background:#00c853; }
+  .b-off   { background:#ff5252; color:#fff; }
+  .b-ghost { background:#26262e; color:#c8c8d0; }
+
+  input[type=range] { width:100%; margin:6px 0 2px; accent-color:#4d7cff; }
+  .slider-head { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:4px; }
+  .slider-head .lbl { color:#8a8a95; font-size:.85rem; }
+  .slider-head .val { font-size:1.25rem; font-weight:700; }
+
+  .legend { display:flex; gap:16px; font-size:.72rem; color:#7a7a86; margin-top:10px; }
+  .legend i { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:5px; vertical-align:middle; }
+
+  .log { max-height:190px; overflow-y:auto; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:.76rem; }
+  .log div { padding:5px 0; border-bottom:1px solid #1e1e25; color:#9a9aa5; }
+  .log div:last-child { border:0; }
+  .log b { color:#e8e8ea; }
+  a { color:#4d7cff; text-decoration:none; }
+  .note { color:#6a6a75; font-size:.76rem; margin-top:10px; line-height:1.5; }
+  .warn { background:rgba(255,209,0,.1); border:1px solid rgba(255,209,0,.3); color:#ffd000;
+          padding:10px 12px; border-radius:10px; font-size:.78rem; margin-bottom:14px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Admin Control</h1>
+    <span id="conn" class="badge off">checking…</span>
+  </header>
+
+  <div id="demoWarn" class="warn" style="display:none">
+    ESP32 is in <b>demo mode</b> — TDS readings are simulated, not from a real probe.
+  </div>
+
+  <div class="card">
+    <div class="hero">
+      <div id="dot" class="dot fresh"></div>
+      <div>
+        <div id="status" class="t">FRESH</div>
+        <div id="sub" class="s">waiting for data…</div>
+      </div>
+    </div>
+    <div class="grid">
+      <div class="kv"><div class="k">TDS</div><div class="v" id="tds">—</div></div>
+      <div class="kv"><div class="k">Pump</div><div class="v" id="pump">OFF</div></div>
+      <div class="kv"><div class="k">Mode</div><div class="v" id="mode">auto</div></div>
+      <div class="kv"><div class="k">Last update</div><div class="v" id="ago">—</div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Pump Control</h2>
+    <div class="row">
+      <button class="b-auto" onclick="setMode('auto')">Auto</button>
+      <button class="b-on"   onclick="pump('on')">Turn On</button>
+      <button class="b-off"  onclick="pump('off')">Turn Off</button>
+    </div>
+    <div class="note"><b>Auto</b> lets the TDS reading decide. <b>Turn On</b> and <b>Turn Off</b> lock the pump in that state until you press <b>Auto</b> again.</div>
+  </div>
+
+  <div class="card">
+    <h2>Salinity Threshold</h2>
+    <div class="slider-head">
+      <span class="lbl">Salt detected above</span>
+      <span class="val" id="thrVal">500 ppm</span>
+    </div>
+    <input type="range" id="thr" min="50" max="3000" step="10" value="500" oninput="thrPreview(this.value)">
+    <div class="row" style="margin-top:10px">
+      <button class="b-ghost" onclick="setThreshold(document.getElementById('thr').value)">Apply Threshold</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>TDS — last 2 minutes</h2>
+    <canvas id="chart" width="728" height="150"></canvas>
+    <div class="legend">
+      <span><i style="background:#4d7cff"></i>TDS ppm</span>
+      <span><i style="background:#ff6d00"></i>threshold</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Activity</h2>
+    <div class="log" id="log"></div>
+    <div class="row" style="margin-top:12px">
+      <button class="b-ghost" onclick="clearLog()">Clear</button>
+    </div>
+  </div>
+
+  <div style="text-align:center;margin:18px 0">
+    <a href="/">← Public dashboard</a>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let lastRelay = null, lastMode = null, lastThr = null, lastOnline = null;
+const lines = [];
+
+function log(msg) {
+  lines.unshift(`<div><b>${new Date().toLocaleTimeString()}</b> ${msg}</div>`);
+  if (lines.length > 40) lines.pop();
+  $('log').innerHTML = lines.join('');
+}
+
+async function post(url, body) {
+  const r = await fetch(url, {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(body)
+  });
+  return r.json();
+}
+
+async function setMode(m) {
+  const s = await post('/api/control', {mode:m});
+  log(`Mode set to <b>${s.mode}</b>`);
+}
+async function pump(v) {
+  await post('/api/control', {pump:v});
+  log(`Manual pump <b>${v.toUpperCase()}</b> sent to ESP32`);
+}
+async function setThreshold(v) {
+  const s = await post('/api/control', {threshold:Number(v)});
+  log(`Threshold set to <b>${s.threshold} ppm</b>`);
+}
+function thrPreview(v) { $('thrVal').textContent = v + ' ppm'; }
+function clearLog() { lines.length = 0; $('log').innerHTML=''; }
+
+function drawChart(h, thr) {
+  const c = $('chart'), g = c.getContext('2d');
+  g.clearRect(0,0,c.width,c.height);
+
+  g.strokeStyle = '#26262e'; g.lineWidth = 1;
+  for (let i=1;i<4;i++){
+    g.beginPath(); g.moveTo(0, c.height*i/4); g.lineTo(c.width, c.height*i/4); g.stroke();
+  }
+  if (!h || h.length < 2) return;
+
+  const maxV = Math.max(thr*1.6, ...h.map(d=>d.tds), 100);
+  const y = v => c.height - (v/maxV)*(c.height-16) - 8;
+
+  // threshold line
+  g.strokeStyle = '#ff6d00'; g.lineWidth = 1.5; g.setLineDash([5,4]);
+  g.beginPath(); g.moveTo(0, y(thr)); g.lineTo(c.width, y(thr)); g.stroke();
+  g.setLineDash([]);
+
+  // area + line
+  g.beginPath(); g.moveTo(0, c.height);
+  h.forEach((d,i)=>{ g.lineTo(i*(c.width/(h.length-1)), y(d.tds)); });
+  g.lineTo(c.width, c.height); g.closePath();
+  const grad = g.createLinearGradient(0,0,0,c.height);
+  grad.addColorStop(0,'rgba(77,124,255,.35)');
+  grad.addColorStop(1,'rgba(77,124,255,0)');
+  g.fillStyle = grad; g.fill();
+
+  g.beginPath();
+  h.forEach((d,i)=>{ const X=i*(c.width/(h.length-1)); i?g.lineTo(X,y(d.tds)):g.moveTo(X,y(d.tds)); });
+  g.strokeStyle = '#4d7cff'; g.lineWidth = 2; g.stroke();
+}
+
+async function poll() {
+  try {
+    const r = await fetch('/api/status');
+    const s = await r.json();
+
+    $('dot').className = 'dot ' + (s.salty ? 'salty' : 'fresh');
+    $('status').textContent = s.salty ? 'SALTY WATER' : 'FRESH WATER';
+    $('tds').textContent = Math.round(s.tds) + ' ppm';
+    $('pump').textContent = s.relay ? 'ON' : 'OFF';
+    $('mode').textContent = s.mode;
+    $('ago').textContent = s.uptime < 3 ? 'just now' : s.uptime + 's ago';
+    $('demoWarn').style.display = s.demo ? 'block' : 'none';
+
+    $('conn').className = 'badge ' + (s.online ? 'on' : 'off');
+    $('conn').textContent = s.online ? 'device online' : 'device offline';
+
+    if (s.threshold !== lastThr) {
+      lastThr = s.threshold;
+      $('thr').value = s.threshold;
+      $('thrVal').textContent = s.threshold + ' ppm';
+    }
+    if (s.mode !== lastMode) { lastMode = s.mode; log(`Mode is <b>${s.mode}</b>`); }
+    if (s.relay !== lastRelay) {
+      lastRelay = s.relay;
+      log(`Pump turned <b>${s.relay ? 'ON' : 'OFF'}</b> (TDS ${Math.round(s.tds)} ppm)`);
+    }
+    if (s.online !== lastOnline) {
+      lastOnline = s.online;
+      log(s.online ? 'Device <b>connected</b>' : 'Device <b>disconnected</b>');
+    }
+
+    drawChart(s.history, s.threshold);
+  } catch (e) {
+    $('conn').className = 'badge off';
+    $('conn').textContent = 'server unreachable';
+  }
+}
+
+poll();
+setInterval(poll, 2000);
+</script>
+</body>
+</html>
