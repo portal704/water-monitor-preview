@@ -1,0 +1,165 @@
+// Render Web Service — dashboard + simple admin
+//
+//   GET  /            public dashboard (read only)
+//   GET  /admin       two buttons: Salt / Fresh
+//   GET  /api/status  current displayed reading
+//   POST /api/status  ESP32 pushes its live sensor reading
+//   POST /api/control admin sets what the dashboard displays
+//
+// State is in memory and resets when the free service sleeps.
+
+const http = require('http');
+const fs = require('fs');
+const path = require('path');
+
+const PORT = process.env.PORT || 3000;
+const PUBLIC_DIR = path.join(__dirname, 'public');
+
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '6767';
+
+const HISTORY_MAX = 120;
+const SALT_PPM = 1800;
+const FRESH_PPM = 120;
+
+let state = {
+    liveTds: 0,          // real reading from the ESP32
+    liveRelay: false,
+    demo: false,
+    lastSeen: 0,         // epoch seconds, 0 = never
+    override: 'live',     // 'live' | 'salt' | 'fresh'
+    history: []
+};
+
+function authorized(req) {
+    const h = req.headers['x-admin-pass'];
+    return typeof h === 'string' && h.length > 0 && h === ADMIN_PASSWORD;
+}
+
+function json(res, code, obj) {
+    const body = JSON.stringify(obj);
+    res.writeHead(code, {
+        'Content-Type': 'application/json',
+        'Cache-Control': 'no-store',
+        'Content-Length': Buffer.byteLength(body)
+    });
+    res.end(body);
+}
+
+function readBody(req, cb) {
+    let body = '';
+    req.on('data', c => {
+        body += c;
+        if (body.length > 100000) req.destroy();
+    });
+    req.on('end', () => cb(body));
+}
+
+// What the dashboard actually shows, after any admin override.
+function effective() {
+    if (state.override === 'salt')  return { tds: SALT_PPM,  relay: true,  salty: true };
+    if (state.override === 'fresh') return { tds: FRESH_PPM, relay: false, salty: false };
+    return {
+        tds: state.liveTds,
+        relay: state.liveRelay,
+        salty: state.liveTds > 500
+    };
+}
+
+const server = http.createServer((req, res) => {
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    const p = url.pathname;
+
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Admin-Pass');
+    if (req.method === 'OPTIONS') return res.writeHead(200).end();
+
+    // ---------- ESP32 pushes its live reading ----------
+    if (p === '/api/status' && req.method === 'POST') {
+        readBody(req, body => {
+            try {
+                const d = JSON.parse(body || '{}');
+                if (d.tds !== undefined)    state.liveTds = Number(d.tds) || 0;
+                if (d.relay !== undefined) state.liveRelay = !!d.relay;
+                if (d.demo !== undefined)  state.demo = !!d.demo;
+                state.lastSeen = Math.floor(Date.now() / 1000);
+
+                const e = effective();
+                state.history.push({ t: state.lastSeen, tds: e.tds, relay: e.relay });
+                if (state.history.length > HISTORY_MAX) state.history.shift();
+
+                json(res, 200, snapshot());
+            } catch (err) {
+                json(res, 400, { error: 'Invalid JSON' });
+            }
+        });
+        return;
+    }
+
+    if (p === '/api/status' && req.method === 'GET') {
+        return json(res, 200, snapshot());
+    }
+
+    // ---------- admin picks the displayed water type ----------
+    if (p === '/api/control' && req.method === 'POST') {
+        if (!authorized(req)) return json(res, 401, { error: 'Unauthorized' });
+
+        readBody(req, body => {
+            try {
+                const d = JSON.parse(body || '{}');
+                if (d.water && ['live', 'salt', 'fresh'].includes(d.water)) {
+                    state.override = d.water;
+                    console.log('Override set to:', d.water);
+                }
+                json(res, 200, snapshot());
+            } catch (err) {
+                json(res, 400, { error: 'Invalid JSON' });
+            }
+        });
+        return;
+    }
+
+    // ---------- static ----------
+    const rel = p === '/' ? '/index.html' : (p === '/admin' ? '/admin.html' : p);
+    const full = path.join(PUBLIC_DIR, path.normalize(rel).replace(/^(\.\.[/\\])+/, ''));
+
+    if (!full.startsWith(PUBLIC_DIR)) return res.writeHead(403).end('Forbidden');
+
+    fs.readFile(full, (err, data) => {
+        if (err) return res.writeHead(404).end('Not Found');
+        const types = {
+            '.html': 'text/html; charset=utf-8',
+            '.js': 'application/javascript',
+            '.css': 'text/css',
+            '.json': 'application/json',
+            '.png': 'image/png',
+            '.svg': 'image/svg+xml',
+            '.ico': 'image/x-icon'
+        };
+        res.writeHead(200, {
+            'Content-Type': types[path.extname(full)] || 'application/octet-stream',
+            'Cache-Control': 'no-cache'
+        });
+        res.end(data);
+    });
+});
+
+function snapshot() {
+    const now = Math.floor(Date.now() / 1000);
+    const seen = state.lastSeen > 0 ? now - state.lastSeen : -1;
+    const e = effective();
+
+    return {
+        tds: e.tds,
+        relay: e.relay,
+        salty: e.salty,
+        override: state.override,
+        liveTds: state.liveTds,
+        online: seen >= 0 && seen < 60,
+        demo: state.demo,
+        uptime: seen,
+        history: state.history
+    };
+}
+
+server.listen(PORT, () => console.log(`Server listening on ${PORT}`));
